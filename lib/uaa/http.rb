@@ -87,9 +87,9 @@ module Http
 
   private
 
-  def json_get(target, path = nil, style = nil, headers = {})
+  def json_get(target, path = nil, style = nil, headers = {}, net_read_timeout: nil)
     raise ArgumentError unless style.nil? || style.is_a?(Symbol)
-    json_parse_reply(style, *http_get(target, path, headers.merge("accept" => JSON_UTF8)))
+    json_parse_reply(style, *http_get(target, path, headers.merge("accept" => JSON_UTF8), net_read_timeout: net_read_timeout))
   end
 
   def json_post(target, path, body, headers = {})
@@ -123,7 +123,7 @@ module Http
     raise BadResponse, "invalid JSON response"
   end
 
-  def http_get(target, path = nil, headers = {}) request(target, :get, path, nil, headers) end
+  def http_get(target, path = nil, headers = {}, net_read_timeout: nil) request(target, :get, path, nil, headers, net_read_timeout: net_read_timeout) end
   def http_post(target, path, body, headers = {}) request(target, :post, path, body, headers) end
   def http_put(target, path, body, headers = {}) request(target, :put, path, body, headers) end
   def http_patch(target, path, body, headers = {}) request(target, :patch, path, body, headers) end
@@ -135,14 +135,14 @@ module Http
     end
   end
 
-  def request(target, method, path, body = nil, headers = {})
+  def request(target, method, path, body = nil, headers = {}, net_read_timeout: nil)
     headers["accept"] = headers["content-type"] if headers["content-type"] && !headers["accept"]
     url = "#{target}#{path}"
 
     logger.debug { "--->\nrequest: #{method} #{url}\n" +
         "headers: #{headers}\n#{'body: ' + Util.truncate(body.to_s, trace? ? 50000 : 50) if body}" }
     status, body, headers = @req_handler ? @req_handler.call(url, method, body, headers) :
-        net_http_request(url, method, body, headers)
+        net_http_request(url, method, body, headers, net_read_timeout: net_read_timeout)
     logger.debug { "<---\nresponse: #{status}\nheaders: #{headers}\n" +
         "#{'body: ' + Util.truncate(body.to_s, trace? ? 50000: 50) if body}" }
 
@@ -153,14 +153,14 @@ module Http
     raise e
   end
 
-  def net_http_request(url, method, body, headers)
+  def net_http_request(url, method, body, headers, net_read_timeout: nil)
     raise ArgumentError unless reqtype = {:delete => Net::HTTP::Delete,
         :get => Net::HTTP::Get, :post => Net::HTTP::Post, :put => Net::HTTP::Put, :patch => Net::HTTP::Patch}[method]
     headers["content-length"] = body.length if body
     uri = URI.parse(url)
     req = reqtype.new(uri.request_uri)
     headers.each { |k, v| req[k] = v }
-    http = http_request(uri)
+    http = http_request(uri, net_read_timeout: net_read_timeout)
     reply, outhdrs = http.request(req, body), {}
     reply.each_header { |k, v| outhdrs[k] = v }
     [reply.code.to_i, reply.body, outhdrs]
@@ -173,12 +173,13 @@ module Http
     raise HTTPException, "HTTP exception: #{e.class}: #{e}"
   end
 
-  def http_request(uri)
+  def http_request(uri, net_read_timeout: nil)
     cache_key = URI.join(uri.to_s, "/")
     @http_cache ||= {}
     return @http_cache[cache_key] if @http_cache[cache_key]
 
     http = Net::HTTP.new(uri.host, uri.port, *proxy_options_for(uri))
+    http.read_timeout = net_read_timeout if net_read_timeout
 
     if uri.is_a?(URI::HTTPS)
       http.use_ssl = true
